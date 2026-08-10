@@ -117,6 +117,29 @@ static esp_err_t ws_send_text(int fd, const char *text)
     return httpd_ws_send_data(s_server, fd, &frame);
 }
 
+typedef struct {
+    char *json;
+    int fd;
+} ws_async_send_ctx_t;
+
+/* Runs on the httpd worker task via httpd_queue_work — NOT on ws_telemetry_task.
+ * httpd_ws_send_data() is only safe from the connection's own handler/worker
+ * context; calling it directly from another FreeRTOS task races with the
+ * socket used to receive incoming commands and can wedge the connection
+ * (symptom: first command works, then the client silently stops receiving
+ * replies until the connection times out and drops). */
+static void ws_async_send_cb(void *arg)
+{
+    ws_async_send_ctx_t *ctx = (ws_async_send_ctx_t *)arg;
+    if (httpd_ws_get_fd_info(s_server, ctx->fd) != HTTPD_WS_CLIENT_WEBSOCKET) {
+        ws_client_remove(ctx->fd);
+    } else if (ws_send_text(ctx->fd, ctx->json) != ESP_OK) {
+        ws_client_remove(ctx->fd);
+    }
+    free(ctx->json);
+    free(ctx);
+}
+
 static void ws_broadcast_telemetry(void)
 {
     char json[512];
@@ -136,18 +159,20 @@ static void ws_broadcast_telemetry(void)
     }
     portEXIT_CRITICAL(&s_clients_lock);
 
-    if (count == 0) {
-        return;
-    }
-
     for (int i = 0; i < count; i++) {
-        int fd = fds[i];
-        if (httpd_ws_get_fd_info(s_server, fd) != HTTPD_WS_CLIENT_WEBSOCKET) {
-            ws_client_remove(fd);
+        ws_async_send_ctx_t *ctx = malloc(sizeof(*ctx));
+        if (!ctx) {
             continue;
         }
-        if (ws_send_text(fd, json) != ESP_OK) {
-            ws_client_remove(fd);
+        ctx->json = strdup(json);
+        ctx->fd = fds[i];
+        if (!ctx->json) {
+            free(ctx);
+            continue;
+        }
+        if (httpd_queue_work(s_server, ws_async_send_cb, ctx) != ESP_OK) {
+            free(ctx->json);
+            free(ctx);
         }
     }
 }
