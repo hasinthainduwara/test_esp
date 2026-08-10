@@ -3,10 +3,12 @@
 #include "esp_err.h"
 
 /**
- * Initialize and start WiFi.
- * In AP mode, this starts the Access Point and returns ESP_OK.
- * In STA mode, this attempts to connect to the configured network and blocks
- * until a connection is established (returns ESP_OK) or fails (returns ESP_FAIL).
+ * Initialize and start WiFi, and advertise CONFIG_ROBOT_MDNS_HOSTNAME.local.
+ * In AP mode, this starts the Access Point.
+ * In STA mode, this waits up to ~20 s for the first DHCP lease and then returns
+ * regardless, leaving a background retry loop running — so a router that is
+ * slow, down, or out of range does not stop the firmware from booting.
+ * Returns ESP_OK; use wifi_is_connected() to test link state.
  */
 esp_err_t wifi_init(void);
 

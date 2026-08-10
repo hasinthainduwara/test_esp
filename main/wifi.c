@@ -6,10 +6,12 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "mdns.h"
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 
@@ -18,11 +20,25 @@ static const char *TAG = "wifi";
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
+/* How long app_main waits for the first DHCP lease before booting anyway. */
+#define WIFI_STA_FIRST_CONNECT_TIMEOUT_MS 20000
+/* Retry pause once the fast retries are used up (router down, out of range). */
+#define WIFI_STA_SLOW_RETRY_US (5 * 1000 * 1000)
+
 static EventGroupHandle_t s_wifi_event_group;
 #if CONFIG_ROBOT_WIFI_MODE_STA
 static int s_retry_num = 0;
+static esp_timer_handle_t s_reconnect_timer = NULL;
 #endif
 static bool s_connected = false;
+
+#if CONFIG_ROBOT_WIFI_MODE_STA
+static void reconnect_timer_cb(void *arg)
+{
+    (void)arg;
+    esp_wifi_connect();
+}
+#endif
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
@@ -30,19 +46,31 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)event_data;
         s_connected = false;
         if (s_retry_num < CONFIG_ROBOT_WIFI_MAX_RETRY) {
-            esp_wifi_connect();
             s_retry_num++;
-            ESP_LOGW(TAG, "Retrying WiFi connection (%d/%d)", s_retry_num, CONFIG_ROBOT_WIFI_MAX_RETRY);
+            ESP_LOGW(TAG, "Disconnected (reason %d) — retry %d/%d",
+                     event ? event->reason : 0, s_retry_num, CONFIG_ROBOT_WIFI_MAX_RETRY);
+            esp_wifi_connect();
         } else {
+            /* Never give up permanently: keep trying slowly so the robot comes
+             * back on its own when the router returns or it is carried in range. */
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+            ESP_LOGW(TAG, "Still down (reason %d) — retrying every %d s",
+                     event ? event->reason : 0, (int)(WIFI_STA_SLOW_RETRY_US / 1000000));
+            if (s_reconnect_timer) {
+                esp_timer_stop(s_reconnect_timer);
+                esp_timer_start_once(s_reconnect_timer, WIFI_STA_SLOW_RETRY_US);
+            }
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        ESP_LOGI(TAG, "Got IP: " IPSTR " (gateway " IPSTR ")",
+                 IP2STR(&event->ip_info.ip), IP2STR(&event->ip_info.gw));
         s_retry_num = 0;
         s_connected = true;
+        xEventGroupClearBits(s_wifi_event_group, WIFI_FAIL_BIT);
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
 #elif CONFIG_ROBOT_WIFI_MODE_AP
@@ -66,6 +94,24 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 #endif
 }
 
+/* Advertise <hostname>.local so the app never has to chase the DHCP address. */
+static void wifi_start_mdns(void)
+{
+    esp_err_t err = mdns_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "mDNS init failed (%s) — use the IP address instead", esp_err_to_name(err));
+        return;
+    }
+
+    mdns_hostname_set(CONFIG_ROBOT_MDNS_HOSTNAME);
+    mdns_instance_name_set("ESP32 Robot");
+    mdns_service_add(NULL, "_http", "_tcp", CONFIG_ROBOT_STREAM_PORT, NULL, 0);
+
+    ESP_LOGI(TAG, "mDNS up — http://%s.local:%d/  ws://%s.local:%d/ws",
+             CONFIG_ROBOT_MDNS_HOSTNAME, CONFIG_ROBOT_STREAM_PORT,
+             CONFIG_ROBOT_MDNS_HOSTNAME, CONFIG_ROBOT_STREAM_PORT);
+}
+
 esp_err_t wifi_init(void)
 {
     esp_err_t ret = nvs_flash_init();
@@ -81,7 +127,7 @@ esp_err_t wifi_init(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
 #if CONFIG_ROBOT_WIFI_MODE_STA
-    esp_netif_create_default_wifi_sta();
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
 #elif CONFIG_ROBOT_WIFI_MODE_AP
     esp_netif_create_default_wifi_ap();
 #endif
@@ -97,9 +143,21 @@ esp_err_t wifi_init(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                                          &wifi_event_handler, NULL, &instance_got_ip));
 
+    const esp_timer_create_args_t timer_args = {
+        .callback = &reconnect_timer_cb,
+        .name = "wifi_reconnect",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_reconnect_timer));
+
+    /* Router credentials live in RAM only, so a re-flash with new ones always wins. */
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+
     wifi_config_t wifi_config = {
         .sta = {
-            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+            /* Threshold is a *minimum* on the enum order, so WPA_PSK here admits
+             * WPA2-only, WPA/WPA2 mixed and WPA3 routers alike — anything but
+             * open/WEP. WPA2_PSK would reject a router advertising plain WPA. */
+            .threshold.authmode = WIFI_AUTH_WPA_PSK,
         },
     };
     strncpy((char *)wifi_config.sta.ssid, CONFIG_ROBOT_WIFI_SSID, sizeof(wifi_config.sta.ssid));
@@ -107,20 +165,36 @@ esp_err_t wifi_init(void)
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    if (sta_netif) {
+        esp_netif_set_hostname(sta_netif, CONFIG_ROBOT_MDNS_HOSTNAME);
+    }
     ESP_ERROR_CHECK(esp_wifi_start());
+    /* Power save adds up to ~100 ms of latency per command — the robot needs
+     * snappy motor response far more than it needs the milliamps. */
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
-    ESP_LOGI(TAG, "Connecting to SSID: %s", CONFIG_ROBOT_WIFI_SSID);
+    ESP_LOGI(TAG, "Connecting to SSID: \"%s\"", CONFIG_ROBOT_WIFI_SSID);
 
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                           pdFALSE, pdFALSE, portMAX_DELAY);
+                                           pdFALSE, pdFALSE,
+                                           pdMS_TO_TICKS(WIFI_STA_FIRST_CONNECT_TIMEOUT_MS));
+
+    wifi_start_mdns();
 
     if (bits & WIFI_CONNECTED_BIT) {
-        return ESP_OK;
+        char ip[16] = "0.0.0.0";
+        wifi_get_ip_str(ip, sizeof(ip));
+        ESP_LOGI(TAG, "Joined \"%s\" — open the app on the same Wi-Fi and connect to %s (or %s.local)",
+                 CONFIG_ROBOT_WIFI_SSID, ip, CONFIG_ROBOT_MDNS_HOSTNAME);
+    } else {
+        /* Boot anyway: servers come up and the retry loop keeps working in the
+         * background, so a router that is slow or briefly down is not fatal. */
+        ESP_LOGW(TAG, "Not connected to \"%s\" yet — continuing to retry in the background. "
+                      "Check the SSID/password in menuconfig if this never clears.",
+                 CONFIG_ROBOT_WIFI_SSID);
     }
-
-    ESP_LOGE(TAG, "Failed to connect to WiFi");
-    return ESP_FAIL;
+    return ESP_OK;
 
 #elif CONFIG_ROBOT_WIFI_MODE_AP
     esp_event_handler_instance_t instance_got_ip;
@@ -170,6 +244,7 @@ esp_err_t wifi_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(78)); /* ~19.5 dBm for better range */
 
     s_connected = true;
+    wifi_start_mdns();
     char ip[16] = "192.168.4.1";
     wifi_get_ip_str(ip, sizeof(ip));
     ESP_LOGI(TAG, "Connect phone to WiFi \"%s\" password \"%s\" then open http://%s/",

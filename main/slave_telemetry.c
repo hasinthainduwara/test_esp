@@ -4,9 +4,12 @@
 #include <string.h>
 #include <sys/time.h>
 
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 #include "uart_protocol.h"
+
+static const char *TAG = "telemetry";
 
 static slave_telemetry_t s_data;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -43,6 +46,7 @@ void slave_telemetry_update_from_line(const char *line)
 
     if (strcmp(line, UART_MSG_HELLO) == 0) {
         mark_online();
+        ESP_LOGI(TAG, "Slave device online");
     } else if (strncmp(line, UART_PREFIX_HEART, strlen(UART_PREFIX_HEART)) == 0) {
         mark_online();
     } else if (strncmp(line, UART_PREFIX_ACK, strlen(UART_PREFIX_ACK)) == 0) {
@@ -53,6 +57,9 @@ void slave_telemetry_update_from_line(const char *line)
             s_data.left_cm = l;
             s_data.right_cm = r;
             mark_online();
+            ESP_LOGI(TAG, "Ultrasonic: left=%.1f cm, right=%.1f cm", l, r);
+        } else {
+            ESP_LOGW(TAG, "Malformed distance message: %s", line);
         }
     } else if (strncmp(line, UART_PREFIX_IMU, strlen(UART_PREFIX_IMU)) == 0) {
         float roll = 0, pitch = 0;
@@ -60,6 +67,9 @@ void slave_telemetry_update_from_line(const char *line)
             s_data.roll_deg = roll;
             s_data.pitch_deg = pitch;
             mark_online();
+            ESP_LOGI(TAG, "IMU: roll=%.2f°, pitch=%.2f°", roll, pitch);
+        } else {
+            ESP_LOGW(TAG, "Malformed IMU message: %s", line);
         }
     } else if (strncmp(line, UART_PREFIX_STATUS, strlen(UART_PREFIX_STATUS)) == 0) {
         const char *val = line + strlen(UART_PREFIX_STATUS);

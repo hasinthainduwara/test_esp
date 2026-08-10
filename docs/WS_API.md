@@ -2,8 +2,10 @@
 
 App-facing interface for the ESP32-S3 master firmware. The phone/app talks to the robot over Wi-Fi; motors and stream pause run on the S3, optional slave telemetry over UART.
 
-Default SoftAP: SSID `Robot-Camera`, password `12345678`, IP `192.168.4.1`  
-(Control port and AP settings are Kconfig; defaults below assume `CONFIG_ROBOT_STREAM_PORT=80`.)
+Default mode: **station** — the robot joins the home router (`CONFIG_ROBOT_WIFI_SSID`) and takes a DHCP
+address, advertised over mDNS as `robot.local`. The app must be on the same Wi-Fi network.
+SoftAP mode (`CONFIG_ROBOT_WIFI_MODE_AP`, IP `192.168.4.1`) is still available in menuconfig.
+(Ports are Kconfig; defaults below assume `CONFIG_ROBOT_STREAM_PORT=80`.)
 
 ```
 App  --HTTP / WebSocket-->  ESP32-S3 (port 80 control, port 81 stream)
@@ -19,11 +21,14 @@ Related: [UART protocol](../../docs/UART_PROTOCOL.md) · [Pin assignment](../../
 
 ## Connection summary
 
-| Service | URL (AP default) | Notes |
-|---------|------------------|-------|
-| Control HTTP | `http://192.168.4.1:80` | Health, info, capture, WS upgrade |
-| WebSocket | `ws://192.168.4.1:80/ws` | Commands + telemetry |
-| MJPEG stream | `http://192.168.4.1:81/stream` | Separate server so video does not block commands |
+| Service | URL (STA default) | Notes |
+|---------|-------------------|-------|
+| Control HTTP | `http://robot.local:80` | Health, info, capture, WS upgrade |
+| WebSocket | `ws://robot.local:80/ws` | Commands + telemetry |
+| MJPEG stream | `http://robot.local:81/stream` | Separate server so video does not block commands |
+
+`robot.local` resolves via mDNS; the DHCP address printed on the serial log works the same and is the
+fallback when a network blocks multicast. In SoftAP mode the host is `192.168.4.1`.
 
 Discover live URLs with `GET /api/info` after joining the robot network.
 
@@ -72,11 +77,30 @@ MJPEG multipart stream (`multipart/x-mixed-replace; boundary=frame`).
 
 | Query | Values | Effect |
 |-------|--------|--------|
-| `quality` | `low` | QVGA, JPEG Q≈20 |
-| `quality` | `medium` (default) | VGA, default camera quality |
-| `quality` | `high` | VGA, JPEG Q≈12 |
+| `quality` | `low` | QQVGA (160x120), JPEG Q≈18 — lowest latency |
+| `quality` | `medium` (default) | QVGA (320x240), JPEG Q≈16 |
+| `quality` | `high` | VGA (640x480), JPEG Q≈12 — detail over latency |
 
-Example: `http://192.168.4.1:81/stream?quality=low`
+Example: `http://robot.local:81/stream?quality=high`
+
+Any path on port 81 serves the stream; only `?quality=` is parsed. The sensor has one set of
+registers, so with several viewers connected the most recent request wins for all of them.
+
+This port is **not** an `esp_http_server` instance. That component services one request at a
+time per server and an MJPEG handler never returns, so one viewer would hold the task forever
+and every other viewer would hang — which presented as "the stream takes a minute to load"
+whenever the webapp and a browser tab were both open. It is a plain TCP server
+(`main/stream_server.c`) that fans one captured frame out to up to 3 viewers, sends with a
+per-frame deadline, and drops any viewer that cannot keep up. A 4th viewer gets HTTP 503
+rather than waiting.
+
+Frames are capped at `CAM_STREAM_FRAME_MS` (50 ms → 20 fps) and grabbed newest-first
+(`CAMERA_GRAB_LATEST`, 2 buffers). Both matter for latency: the cap keeps total bitrate below
+what the link absorbs so queues stay empty, and newest-first means what you see is current
+rather than a backlog of stale frames.
+
+Buffers are allocated for VGA at init even though the default is QVGA, so `?quality=high`
+can raise the framesize at runtime without overflowing them.
 
 While at least one stream client is connected **and** streaming is not paused via WS, telemetry reports `camera.streaming: true`.
 
@@ -87,9 +111,17 @@ While at least one stream client is connected **and** streaming is not paused vi
 - **Upgrade:** `GET /ws` with WebSocket handshake on the control server.
 - **Frames:** text JSON only (UTF-8).
 - **Clients:** up to 4 sockets are tracked for telemetry broadcast.
-- **Server → client:** telemetry every **200 ms** (broadcast to all tracked clients).
+- **Server → client:** telemetry every **500 ms**, **disabled by default** — see the note below.
 - **Client → server:** command messages; each handled command gets an `ack` or `error` reply on the same connection.
 - Non-`command` JSON types are ignored (no error).
+
+> **Telemetry push is off by default** (`CONFIG_ROBOT_WS_TELEMETRY`, default `n`).
+> The push and the incoming-command reader share one `esp_http_server` task, and a push
+> that fails to return there stops commands being read at all — motors go dead while the
+> browser still shows a healthy, open WebSocket. Command `ack`/`error` replies are
+> unaffected: they are sent with `httpd_ws_send_frame()` from inside the handler, in
+> response to a read, never asynchronously. Enable telemetry only if your app consumes
+> it, and watch the log for `Telemetry frames skipped`.
 
 ### Client → server: command
 
@@ -278,8 +310,8 @@ Flat distance/IMU fields and nested `sensors` mirror the same values for older a
 
 ## Quick start (app)
 
-1. Join SoftAP `Robot-Camera` (or the configured STA network).
-2. `GET http://192.168.4.1/api/info` → read `ws_url` and `stream_url`.
+1. Join the same Wi-Fi network as the robot (`Dialog 4G 856` by default), or SoftAP `Robot-Camera` if built in AP mode.
+2. `GET http://robot.local/api/info` → read `ws_url` and `stream_url` (these carry the real IP).
 3. Open WebSocket to `ws_url`; listen for `type: "telemetry"`.
 4. Send commands with `type: "command"`; wait for matching `ack` / `error` via `commandId`.
 5. Show video from `stream_url` (optional `?quality=low|medium|high`).
@@ -290,12 +322,14 @@ Flat distance/IMU fields and nested `sensors` mirror the same values for older a
 
 | Piece | Source | Role |
 |-------|--------|------|
-| Control HTTP + stream server | `main/http_stream.c` | `/`, `/health`, `/api/info`, `/capture`, `/stream`; WS pause via `http_stream_set_enabled` |
-| WebSocket endpoint + telemetry task | `main/ws_server.c` | `/ws`, 200 ms broadcast, client list |
+| Control HTTP server | `main/http_stream.c` | `/`, `/health`, `/api/info`, `/capture`, `/ws` upgrade |
+| MJPEG video | `main/stream_server.c` | Port 81, plain TCP, multi-viewer; WS pause via `stream_server_set_enabled` |
+| WebSocket endpoint + telemetry task | `main/ws_server.c` | `/ws`, client list, optional 500 ms broadcast |
 | Command parse / ack / error | `main/cmd_handler.c` | JSON → motors / stream pause / UART |
 | UART forward | `main/uart_gateway.c` | Maps optional slave actions to `CMD:*` lines |
 | Slave sensor cache | `main/slave_telemetry.c` | Feeds telemetry JSON |
 
 Ports: control = `CONFIG_ROBOT_STREAM_PORT` (default 80); stream = control + 1 (default 81).
 
-Telemetry interval: `WS_TELEMETRY_INTERVAL_MS` (200). Max tracked WS clients: `WS_MAX_CLIENTS` (4).
+Telemetry interval: `WS_TELEMETRY_INTERVAL_MS` (500), only when `CONFIG_ROBOT_WS_TELEMETRY` is
+enabled. Max tracked WS clients: `WS_MAX_CLIENTS` (4).

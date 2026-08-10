@@ -1,2 +1,3 @@
 dependencies:
   espressif/esp32-camera: "^2.0.15"
+  espressif/mdns: "^1.2"

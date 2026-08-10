@@ -1,10 +1,12 @@
 import { CameraPreview } from './components/CameraPreview'
 import { ConnectBar } from './components/ConnectBar'
 import { DrivePad } from './components/DrivePad'
+import { useMjpegStream } from './hooks/useMjpegStream'
 import { useRobotSocket } from './hooks/useRobotSocket'
 
 export default function App() {
   const robot = useRobotSocket()
+  const stream = useMjpegStream(robot.streamSrc)
 
   return (
     <div className="shell">
@@ -21,9 +23,12 @@ export default function App() {
           onDisconnect={robot.disconnect}
         />
         <CameraPreview
-          src={robot.streamSrc}
+          canvasRef={stream.canvasRef}
+          active={robot.streamOn && stream.hasFrame}
           connected={robot.isConnected}
           streamOn={robot.streamOn}
+          fps={stream.fps}
+          streamError={stream.error}
           onToggleStream={robot.setStreamEnabled}
         />
         <DrivePad

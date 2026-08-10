@@ -4,6 +4,7 @@ idf_component_register(
         "camera.c"
         "wifi.c"
         "http_stream.c"
+        "stream_server.c"
         "ws_server.c"
         "uart_gateway.c"
         "slave_telemetry.c"
@@ -17,6 +18,7 @@ idf_component_register(
         esp_event
         esp_netif
         esp_http_server
+        esp_timer
         json
         driver
 )

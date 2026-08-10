@@ -30,11 +30,19 @@ esp_err_t camera_init(void)
         .ledc_timer = LEDC_TIMER_0,
         .ledc_channel = LEDC_CHANNEL_0,
         .pixel_format = PIXFORMAT_JPEG,
+        /* Allocate for the LARGEST preset the stream can switch to, not the
+         * default one. Frame buffers are sized at init; dropping to a smaller
+         * framesize later is free, but `?quality=high` raising it above the
+         * allocation would overflow the buffer and corrupt frames. */
         .frame_size = CAM_FRAME_SIZE,
         .jpeg_quality = CAM_JPEG_QUALITY,
         .fb_count = CAM_FB_COUNT,
         .fb_location = CAMERA_FB_IN_PSRAM,
-        .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
+        /* LATEST, not WHEN_EMPTY: always hand out the newest frame and discard
+         * anything queued behind it. WHEN_EMPTY drains buffers in order, so the
+         * viewer ends up watching the oldest frame the driver is holding — the
+         * feed stays smooth but lags reality, which is useless for driving. */
+        .grab_mode = CAMERA_GRAB_LATEST,
     };
 
     esp_err_t err = esp_camera_init(&config);
@@ -43,11 +51,12 @@ esp_err_t camera_init(void)
         return err;
     }
 
+    /* Step down to the fast streaming size now that the buffers exist. */
     sensor_t *sensor = esp_camera_sensor_get();
     if (sensor) {
-        sensor->set_framesize(sensor, CAM_FRAME_SIZE);
+        sensor->set_framesize(sensor, CAM_STREAM_FRAME_SIZE);
     }
 
-    ESP_LOGI(TAG, "Camera initialized");
+    ESP_LOGI(TAG, "Camera initialized — buffers for VGA, streaming at QVGA, newest-frame grab");
     return ESP_OK;
 }

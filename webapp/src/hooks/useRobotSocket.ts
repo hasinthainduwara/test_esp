@@ -8,10 +8,37 @@ import {
   wsUrl,
 } from '../lib/robotApi'
 
-const DEFAULT_HOST = '192.168.4.1'
+/* Station mode: the router assigns the robot a DHCP address, so reach it by the
+ * mDNS name the firmware advertises. The raw IP still works if typed in. */
+const DEFAULT_HOST = 'robot.local'
+const HOST_STORAGE_KEY = 'robot.host'
+/* Every command gets an ack. Going this long with a command outstanding and no
+ * reply of any kind means the socket is open but the firmware is not servicing
+ * it — an open WebSocket is not proof that commands are arriving.
+ *
+ * Deliberately measured against unanswered commands rather than "any traffic":
+ * the firmware ships with its telemetry push disabled, so an idle connection is
+ * legitimately silent and must not be reported as broken. */
+const ACK_TIMEOUT_MS = 4000
+
+function loadHost(): string {
+  try {
+    return localStorage.getItem(HOST_STORAGE_KEY) || DEFAULT_HOST
+  } catch {
+    return DEFAULT_HOST
+  }
+}
+
+function saveHost(host: string) {
+  try {
+    localStorage.setItem(HOST_STORAGE_KEY, host)
+  } catch {
+    /* private mode / storage disabled — not worth failing the connect over */
+  }
+}
 
 export function useRobotSocket() {
-  const [hostInput, setHostInput] = useState(DEFAULT_HOST)
+  const [hostInput, setHostInput] = useState(loadHost)
   const [status, setStatus] = useState<ConnectionStatus>('disconnected')
   const [error, setError] = useState<string | null>(null)
   const [streamSrc, setStreamSrc] = useState<string | null>(null)
@@ -21,9 +48,20 @@ export function useRobotSocket() {
   const [lastReply, setLastReply] = useState<string | null>(null)
 
   const socketRef = useRef<WebSocket | null>(null)
-  const hostRef = useRef(DEFAULT_HOST)
+  const hostRef = useRef(loadHost())
   const pressedRef = useRef<MoveDirection | null>(null)
   const streamOnRef = useRef(false)
+  /* Timestamp of the oldest command still awaiting any reply, or null when
+   * everything sent has been answered. */
+  const pendingSinceRef = useRef<number | null>(null)
+  const watchdogRef = useRef<number | null>(null)
+
+  const clearWatchdog = useCallback(() => {
+    if (watchdogRef.current !== null) {
+      clearInterval(watchdogRef.current)
+      watchdogRef.current = null
+    }
+  }, [])
 
   const sendJson = useCallback((payload: object): boolean => {
     const socket = socketRef.current
@@ -33,6 +71,9 @@ export function useRobotSocket() {
     }
     const text = JSON.stringify(payload)
     socket.send(text)
+    if (pendingSinceRef.current === null) {
+      pendingSinceRef.current = Date.now()
+    }
     const action = 'action' in payload ? String((payload as { action?: string }).action) : '?'
     const direction =
       'payload' in payload &&
@@ -77,6 +118,7 @@ export function useRobotSocket() {
   const disconnect = useCallback(() => {
     const socket = socketRef.current
     socketRef.current = null
+    clearWatchdog()
     if (socket) {
       socket.onopen = null
       socket.onclose = null
@@ -89,24 +131,26 @@ export function useRobotSocket() {
         socket.close()
       }
     }
+    pendingSinceRef.current = null
     pressedRef.current = null
     setActiveDirection(null)
     stopStreamFetch()
     setLastSent(null)
     setLastReply(null)
     setStatus('disconnected')
-  }, [stopStreamFetch])
+  }, [clearWatchdog, stopStreamFetch])
 
   const connect = useCallback(() => {
     const host = normalizeHost(hostInput)
     if (!host) {
-      setError('Enter a robot IP address')
+      setError('Enter the robot address (robot.local or its IP)')
       setStatus('error')
       return
     }
 
     disconnect()
     hostRef.current = host
+    saveHost(host)
     setError(null)
     setStatus('connecting')
     setLastReply(null)
@@ -118,17 +162,39 @@ export function useRobotSocket() {
       if (socketRef.current !== socket) {
         return
       }
-      /* Testing default: WS only — do not open MJPEG (keeps Wi‑Fi free for motors). */
-      stopStreamFetch()
       setStatus('connected')
       setError(null)
       document.getElementById('robot-host')?.blur()
+
+      /* Camera comes up with the connection: you drive by looking at it. The
+       * firmware may still be paused from a previous session, so ask for it
+       * explicitly rather than assuming the default. */
+      sendJson(buildStreamCommand(true))
+      streamOnRef.current = true
+      setStreamOn(true)
+      setStreamSrc(streamCacheBust(hostRef.current))
+
+      pendingSinceRef.current = null
+      clearWatchdog()
+      watchdogRef.current = window.setInterval(() => {
+        if (socketRef.current !== socket) {
+          return
+        }
+        const pendingSince = pendingSinceRef.current
+        if (pendingSince !== null && Date.now() - pendingSince > ACK_TIMEOUT_MS) {
+          setError('Robot is not acknowledging commands. Press Connect to retry.')
+          setStatus('error')
+          clearWatchdog()
+        }
+      }, 1000)
     }
 
     socket.onmessage = (event) => {
       if (socketRef.current !== socket) {
         return
       }
+      /* Any reply proves the firmware is servicing the socket. */
+      pendingSinceRef.current = null
       try {
         const msg = JSON.parse(String(event.data)) as {
           type?: string
@@ -152,7 +218,9 @@ export function useRobotSocket() {
       if (socketRef.current !== socket) {
         return
       }
-      setError('WebSocket failed — check Wi‑Fi and IP')
+      setError(
+        `Could not reach ${hostRef.current} — same Wi‑Fi? If robot.local fails, type the IP from the serial log`,
+      )
       setStatus('error')
     }
 
@@ -161,12 +229,13 @@ export function useRobotSocket() {
         return
       }
       socketRef.current = null
+      clearWatchdog()
       pressedRef.current = null
       setActiveDirection(null)
       stopStreamFetch()
       setStatus((prev) => (prev === 'error' ? 'error' : 'disconnected'))
     }
-  }, [disconnect, hostInput, stopStreamFetch])
+  }, [clearWatchdog, disconnect, hostInput, sendJson, stopStreamFetch])
 
   const pressDirection = useCallback(
     (direction: MoveDirection) => {
@@ -176,18 +245,15 @@ export function useRobotSocket() {
         sendMove('stop')
         return
       }
-      /* If preview is on, pause frames while driving so commands stay responsive. */
-      if (streamOnRef.current && !pressedRef.current) {
-        sendJson(buildStreamCommand(false))
-        setStreamSrc(null)
-        setStreamOn(false)
-        streamOnRef.current = false
-      }
+      /* The camera deliberately keeps running while driving — seeing where you
+       * are going is the whole point. The firmware keeps commands ahead of
+       * video (higher-priority task, separate core, TCP_NODELAY) rather than
+       * the app having to choose between them. */
       pressedRef.current = direction
       setActiveDirection(direction)
       sendMove(direction)
     },
-    [sendJson, sendMove],
+    [sendMove],
   )
 
   const releaseDirection = useCallback(

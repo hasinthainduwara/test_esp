@@ -23,9 +23,50 @@
 #define CAM_PIN_HREF    7
 #define CAM_PIN_PCLK    13
 
-/** Default JPEG stream resolution (FRAMESIZE_VGA = 640x480). */
+/**
+ * Largest frame the stream can be switched to at runtime (`?quality=high`), and
+ * therefore the size the frame buffers are allocated for at init.
+ * FRAMESIZE_VGA = 640x480.
+ */
 #define CAM_FRAME_SIZE       FRAMESIZE_VGA
-#define CAM_JPEG_QUALITY     15
-#define CAM_FB_COUNT         3
-/** Min ms between MJPEG frames (~15 fps cap; WiFi AP cannot sustain VGA faster). */
-#define CAM_STREAM_FRAME_MS  66
+
+/**
+ * Default streaming resolution (FRAMESIZE_QVGA = 320x240).
+ *
+ * Small frames are what make the feed usable *while driving*: they encode and
+ * clear the air faster, so video does not soak the same Wi-Fi the motor
+ * commands need. Ask for `?quality=high` when detail matters more than latency.
+ */
+#define CAM_STREAM_FRAME_SIZE FRAMESIZE_QVGA
+
+/**
+ * JPEG quality, inverted: higher number = more compression = smaller frames.
+ * 16 keeps a QVGA frame around 5-8 KB. Frame *size* is the lever that decides
+ * whether video leaves any airtime for motor commands, so this is deliberately
+ * not set to a "nice" low number.
+ */
+#define CAM_JPEG_QUALITY     16
+
+/**
+ * Two buffers, grabbed newest-first. More buffers do NOT mean smoother video —
+ * they mean a queue of stale frames between the lens and the screen, which is
+ * exactly the lag that makes driving by camera feel unresponsive.
+ */
+#define CAM_FB_COUNT         2
+
+/**
+ * Min ms between MJPEG frames (50 ms = 20 fps ceiling).
+ *
+ * Counter-intuitive but measured: running this uncapped made the video look
+ * *slower*, not faster. The ESP32 pushed frames faster than the air could carry
+ * them, so they piled up in the TCP and Wi-Fi queues and the browser ended up
+ * displaying frames that were seconds old — and command packets queued behind
+ * that backlog too (an 11.7 s gap between two commands sent 96 ms apart).
+ *
+ * Capping the rate keeps total bitrate under what the link can absorb, which
+ * keeps queues empty. Empty queues are what "realtime" actually requires: fewer
+ * frames per second, but each one arrives ~immediately. Raise this number
+ * (lower fps) if video and controls still fight; lower it only if you have
+ * airtime to spare.
+ */
+#define CAM_STREAM_FRAME_MS  50

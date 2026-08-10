@@ -53,7 +53,7 @@ export function ConnectBar({
         }}
       >
         <label className="connect__label" htmlFor="robot-host">
-          Robot IP
+          Robot address
         </label>
         <div className="connect__row">
           <input
@@ -61,11 +61,11 @@ export function ConnectBar({
             className="connect__input"
             value={host}
             onChange={(event) => onHostChange(event.target.value)}
-            placeholder="192.168.4.1"
+            placeholder="robot.local"
             autoComplete="off"
             spellCheck={false}
             disabled={busy || connected}
-            inputMode="decimal"
+            inputMode="url"
           />
           <button
             type="submit"

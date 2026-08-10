@@ -1,6 +1,20 @@
 # ESP32-S3-CAM (N16R8: 16MB flash, 8MB OPI PSRAM)
 CONFIG_IDF_TARGET="esp32s3"
 
+# Do NOT enable CONFIG_CAMERA_PSRAM_DMA with JPEG output on this driver version.
+# It was tried and delivered zero usable frames: in PSRAM mode cam_hal sets the
+# frame length to a padded multiple of the DMA block size and then only searches
+# for the JPEG end marker inside a ~1 KB window at the very end of that padding
+# (cam_hal.c, eoi_probe_window). QVGA JPEGs are ~5-8 KB, so the real end-of-image
+# lands outside the probe window, every frame is rejected with
+# "NO-EOI - JPEG end marker missing" and esp_camera_fb_get() then times out.
+
+# Move cam_task off the Wi-Fi/command core. It runs at configMAX_PRIORITIES-2
+# (~23), so on core 0 it preempts both the Wi-Fi stack and the control server,
+# which showed up as commands arriving ~11 s late and acks failing to send.
+# Core 0 = Wi-Fi + commands, core 1 = camera capture + MJPEG sending.
+CONFIG_CAMERA_CORE1=y
+
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 
 CONFIG_SPIRAM=y
@@ -10,11 +24,28 @@ CONFIG_SPIRAM_SPEED_40M=y
 CONFIG_ESP_HTTP_SERVER_MAX_URI_HANDLERS=8
 CONFIG_HTTPD_WS_SUPPORT=y
 
-CONFIG_ROBOT_WIFI_MODE_AP=y
-CONFIG_ROBOT_WIFI_AP_SSID="Robot-Camera"
-CONFIG_ROBOT_WIFI_AP_PASSWORD="12345678"
-CONFIG_ROBOT_WIFI_AP_CHANNEL=6
-CONFIG_ROBOT_WIFI_AP_MAX_CONN=4
+# Control server (6) + stream server (3) + 2 listeners + 2 ctrl sockets + mDNS.
+# The default of 10 leaves no room and makes accept() fail once a browser opens
+# its usual handful of connections.
+CONFIG_LWIP_MAX_SOCKETS=16
+
+# Left at the 4 x MSS default deliberately. Enlarging this was tried and made
+# latency worse: a bigger send buffer just means more already-stale video frames
+# queued ahead of the newest one, and command packets waiting behind them. For a
+# realtime feed, a small buffer that applies backpressure to the camera loop
+# beats a large one that absorbs bursts.
+# CONFIG_LWIP_TCP_SND_BUF_DEFAULT / CONFIG_LWIP_TCP_WND_DEFAULT: keep defaults.
+
+# Station mode: robot joins the home router, webapp talks to it over the LAN.
+CONFIG_ROBOT_WIFI_MODE_STA=y
+CONFIG_ROBOT_WIFI_SSID="Dialog 4G 856"
+CONFIG_ROBOT_WIFI_PASSWORD="91D93657"
+CONFIG_ROBOT_WIFI_MAX_RETRY=10
+CONFIG_ROBOT_MDNS_HOSTNAME="robot"
+
+# Telemetry push shares the httpd task that reads commands; a stuck push stops
+# motor commands from being read at all. Off until that send path is proven.
+CONFIG_ROBOT_WS_TELEMETRY=n
 
 # UART gateway to ESP32 slave (GPIO1/2 — do NOT use 43/44 USB console pins)
 CONFIG_MASTER_UART_PORT=1

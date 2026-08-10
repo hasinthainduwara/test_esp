@@ -1,44 +1,61 @@
+import type { RefObject } from 'react'
+
 type CameraPreviewProps = {
-  src: string | null
+  canvasRef: RefObject<HTMLCanvasElement | null>
+  active: boolean
   connected: boolean
   streamOn: boolean
+  fps: number
+  streamError: string | null
   onToggleStream: (enabled: boolean) => void
 }
 
 export function CameraPreview({
-  src,
+  canvasRef,
+  active,
   connected,
   streamOn,
+  fps,
+  streamError,
   onToggleStream,
 }: CameraPreviewProps) {
   return (
     <section className="camera" aria-label="Camera preview">
-      {src ? (
-        <img
-          className="camera__feed"
-          src={src}
-          alt="Robot camera stream"
-          draggable={false}
-        />
-      ) : (
+      {/* The canvas stays mounted while streaming so its ref is available
+          before the first frame arrives; the placeholder sits on top until
+          there is something to show. */}
+      <canvas
+        className="camera__feed"
+        ref={canvasRef}
+        hidden={!active}
+        aria-label="Robot camera stream"
+      />
+      {!active ? (
         <div className="camera__placeholder">
           <span className="camera__mark">ROBOT</span>
           <p>
             {!connected
-              ? 'Connect for motor control'
-              : 'Camera off (saves Wi‑Fi for motors)'}
+              ? 'Connect for live video and motor control'
+              : streamOn
+                ? streamError
+                  ? `Reconnecting to camera — ${streamError}`
+                  : 'Waiting for first frame…'
+                : 'Camera paused — press Start camera'}
           </p>
         </div>
-      )}
+      ) : null}
       <div className="camera__vignette" aria-hidden="true" />
       {connected ? (
-        <button
-          type="button"
-          className="camera__toggle"
-          onClick={() => onToggleStream(!streamOn)}
-        >
-          {streamOn ? 'Stop camera' : 'Start camera'}
-        </button>
+        <>
+          {active ? <span className="camera__fps">{fps} fps</span> : null}
+          <button
+            type="button"
+            className="camera__toggle"
+            onClick={() => onToggleStream(!streamOn)}
+          >
+            {streamOn ? 'Stop camera' : 'Start camera'}
+          </button>
+        </>
       ) : null}
     </section>
   )

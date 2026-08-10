@@ -26,7 +26,25 @@ npm install
 npm run dev
 ```
 
-Join robot Wi‑Fi, open the Vite URL, Connect to `192.168.4.1`. Details: [webapp/README.md](webapp/README.md).
+Put the laptop on the same router as the robot, open the Vite URL, Connect to `robot.local`
+(or the IP the firmware prints on boot). Details: [webapp/README.md](webapp/README.md).
+
+## Wi-Fi
+
+Station mode by default — the robot joins your router and the app reaches it over the LAN:
+
+| Setting | Value | Where |
+|---------|-------|-------|
+| SSID | `Dialog 4G 856` | `CONFIG_ROBOT_WIFI_SSID` |
+| Password | set in menuconfig | `CONFIG_ROBOT_WIFI_PASSWORD` |
+| Name on the LAN | `robot.local` (mDNS) | `CONFIG_ROBOT_MDNS_HOSTNAME` |
+
+Change networks with `idf.py menuconfig` → *Robot Camera Configuration*, then rebuild and flash;
+the same menu switches back to SoftAP mode if you need the robot to run off-network.
+
+If it does not connect, the serial log says why — a wrong password shows repeated
+`Disconnected (reason 15)` / `(reason 205)`. The firmware keeps retrying every 5 s
+rather than giving up, so fixing the router is enough to bring it back.
 
 ## Build
 

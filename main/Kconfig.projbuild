@@ -61,6 +61,26 @@ menu "Robot Camera Configuration"
         default 10
         range 1 100
 
+    config ROBOT_WS_TELEMETRY
+        bool "Push periodic telemetry over the WebSocket"
+        default n
+        help
+            Broadcasts sensor/status JSON to every connected app twice a second.
+
+            Off by default. These pushes run on the same esp_http_server task
+            that reads incoming commands, and a push that does not return there
+            stops commands from being read at all — motors stop responding while
+            the socket still looks connected in the browser. Motor control and
+            command acks do not need this; turn it on only if the app consumes
+            telemetry, and watch for "Telemetry frames skipped" in the log.
+
+    config ROBOT_MDNS_HOSTNAME
+        string "mDNS hostname"
+        default "robot"
+        help
+            Advertised as <hostname>.local so the app can reach the robot without
+            knowing the DHCP address the router handed out.
+
     config ROBOT_STREAM_PORT
         int "HTTP stream server port"
         default 80
