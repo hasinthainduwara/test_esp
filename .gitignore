@@ -1,0 +1,46 @@
+# ESP-IDF build output
+build/
+managed_components/
+dependencies.lock
+sdkconfig.old
+
+# ESP-IDF / CMake cache & temp
+.cache/
+compile_commands.json
+CMakeCache.txt
+CMakeFiles/
+
+# VS Code
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/c_cpp_properties.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# Webapp (Node/Vite) - build artifacts & deps
+webapp/node_modules/
+webapp/dist/
+webapp/dist-ssr/
+webapp/*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor swap/backup files
+*.swp
+*.swo
+*~
+
+# Environment / secrets
+.env
+.env.local

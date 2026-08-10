@@ -1,0 +1,164 @@
+menu "Robot Camera Configuration"
+
+    choice ROBOT_WIFI_MODE
+        prompt "WiFi Mode"
+        default ROBOT_WIFI_MODE_AP
+        help
+            Choose between Station Mode (connect to existing WiFi) or Access Point Mode (ESP creates its own WiFi network).
+
+        config ROBOT_WIFI_MODE_STA
+            bool "Station Mode (STA)"
+
+        config ROBOT_WIFI_MODE_AP
+            bool "Access Point Mode (AP)"
+    endchoice
+
+    config ROBOT_WIFI_AP_SSID
+        string "AP SSID"
+        depends on ROBOT_WIFI_MODE_AP
+        default "Robot-Camera"
+        help
+            SSID of the Access Point created by the ESP32.
+
+    config ROBOT_WIFI_AP_PASSWORD
+        string "AP Password"
+        depends on ROBOT_WIFI_MODE_AP
+        default "12345678"
+        help
+            Password of the Access Point. Must be empty (for open network) or at least 8 characters long.
+
+    config ROBOT_WIFI_AP_CHANNEL
+        int "AP Channel"
+        depends on ROBOT_WIFI_MODE_AP
+        default 6
+        range 1 13
+        help
+            WiFi channel to use for the AP.
+
+    config ROBOT_WIFI_AP_MAX_CONN
+        int "AP Max Connections"
+        depends on ROBOT_WIFI_MODE_AP
+        default 4
+        range 1 10
+        help
+            Maximum number of clients allowed to connect to the AP.
+
+    config ROBOT_WIFI_SSID
+        string "WiFi SSID (station mode)"
+        depends on ROBOT_WIFI_MODE_STA
+        default "YOUR_WIFI_SSID"
+        help
+            SSID of the WiFi network the camera joins. Your phone/app must be on the same LAN.
+
+    config ROBOT_WIFI_PASSWORD
+        string "WiFi password"
+        depends on ROBOT_WIFI_MODE_STA
+        default "YOUR_WIFI_PASSWORD"
+
+    config ROBOT_WIFI_MAX_RETRY
+        int "Max connection retries"
+        depends on ROBOT_WIFI_MODE_STA
+        default 10
+        range 1 100
+
+    config ROBOT_STREAM_PORT
+        int "HTTP stream server port"
+        default 80
+        range 1 65535
+
+    config MASTER_UART_PORT
+        int "UART port to slave ESP32 (0-2)"
+        default 1
+        range 0 2
+
+    config MASTER_UART_TX_GPIO
+        int "UART TX GPIO (to slave RX)"
+        default 1
+        range 0 48
+        help
+            Do NOT use GPIO43/44 on ESP32-S3 — those are USB-UART console pins.
+            Using them kills serial monitor and flaky USB reconnect.
+
+    config MASTER_UART_RX_GPIO
+        int "UART RX GPIO (from slave TX)"
+        default 2
+        range 0 48
+
+    config MASTER_UART_BAUD
+        int "UART baud rate"
+        default 115200
+
+    config MOTOR_ENABLE
+        bool "Enable BTS7960 motor drivers on this board"
+        default y
+        help
+            Drive 2x BTS7960 from Freenove ESP32-S3 right-side headers.
+            Uses GPIO39-42 and 47/48/21/20 — avoids camera, USB (43/44), and octal PSRAM (35-38).
+
+    config MOTOR_PWM_DUTY
+        int "Motor PWM duty (0-255)"
+        depends on MOTOR_ENABLE
+        default 200
+        range 0 255
+
+    config MOTOR_LEFT_RPWM_GPIO
+        int "Left RPWM GPIO"
+        depends on MOTOR_ENABLE
+        default 39
+        range 0 48
+
+    config MOTOR_LEFT_LPWM_GPIO
+        int "Left LPWM GPIO"
+        depends on MOTOR_ENABLE
+        default 40
+        range 0 48
+
+    config MOTOR_LEFT_R_EN_GPIO
+        int "Left R_EN GPIO"
+        depends on MOTOR_ENABLE
+        default 41
+        range 0 48
+
+    config MOTOR_LEFT_L_EN_GPIO
+        int "Left L_EN GPIO"
+        depends on MOTOR_ENABLE
+        default 42
+        range 0 48
+
+    config MOTOR_RIGHT_RPWM_GPIO
+        int "Right RPWM GPIO"
+        depends on MOTOR_ENABLE
+        default 47
+        range 0 48
+
+    config MOTOR_RIGHT_LPWM_GPIO
+        int "Right LPWM GPIO"
+        depends on MOTOR_ENABLE
+        default 48
+        range 0 48
+
+    config MOTOR_RIGHT_R_EN_GPIO
+        int "Right R_EN GPIO"
+        depends on MOTOR_ENABLE
+        default 21
+        range 0 48
+
+    config MOTOR_RIGHT_L_EN_GPIO
+        int "Right L_EN GPIO"
+        depends on MOTOR_ENABLE
+        default 45
+        range 0 48
+        help
+            Do NOT use GPIO19/20 — hard-wired to the native USB D-/D+ lines on
+            ESP32-S3 and cannot be reliably used as a motor enable pin.
+
+    config MOTOR_LED_GPIO
+        int "LED control GPIO (-1 = disabled)"
+        depends on MOTOR_ENABLE
+        default 0
+        range -1 48
+        help
+            Do NOT use GPIO19/20 (USB D-/D+). GPIO0 is the BOOT button strap;
+            safe to drive as output after boot.
+
+endmenu

@@ -1,0 +1,22 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "camera.c"
+        "wifi.c"
+        "http_stream.c"
+        "ws_server.c"
+        "uart_gateway.c"
+        "slave_telemetry.c"
+        "cmd_handler.c"
+        "motor.c"
+        "net_log.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        nvs_flash
+        esp_wifi
+        esp_event
+        esp_netif
+        esp_http_server
+        json
+        driver
+)
