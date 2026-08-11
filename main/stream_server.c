@@ -269,6 +269,8 @@ static void stream_task(void *arg)
             continue;
         }
 
+        int64_t frame_start = esp_timer_get_time();
+
         camera_fb_t *fb = esp_camera_fb_get();
         if (!fb) {
             vTaskDelay(1);
@@ -286,9 +288,14 @@ static void stream_task(void *arg)
                                 "Content-Length: %u\r\n\r\n",
                                 (unsigned)fb->len);
 
-        int64_t deadline = esp_timer_get_time() + STREAM_FRAME_DEADLINE_MS * 1000;
+        int64_t deadline = esp_timer_get_time() + 500 * 1000;
         for (int i = 0; i < STREAM_MAX_VIEWERS; i++) {
             if (s_viewers[i] < 0) {
+                continue;
+            }
+            /* Non-blocking writability check: if socket buffer is full, drop this frame
+             * for this viewer to prevent airtime congestion without closing the session. */
+            if (!sock_wait_writable(s_viewers[i], 0)) {
                 continue;
             }
             send_result_t rc = send_all(s_viewers[i], part, (size_t)part_len, deadline);
@@ -324,11 +331,13 @@ static void stream_task(void *arg)
             stats_start = now;
         }
 
-#if CAM_STREAM_FRAME_MS > 0
-        vTaskDelay(pdMS_TO_TICKS(CAM_STREAM_FRAME_MS));
-#else
-        taskYIELD();
-#endif
+        int64_t elapsed_ms = (esp_timer_get_time() - frame_start) / 1000;
+        int target_ms = CAM_STREAM_FRAME_MS;
+        if (target_ms > 0 && elapsed_ms < target_ms) {
+            vTaskDelay(pdMS_TO_TICKS(target_ms - elapsed_ms));
+        } else {
+            taskYIELD();
+        }
     }
 }
 

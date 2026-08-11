@@ -69,4 +69,4 @@
  * (lower fps) if video and controls still fight; lower it only if you have
  * airtime to spare.
  */
-#define CAM_STREAM_FRAME_MS  50
+#define CAM_STREAM_FRAME_MS  33
